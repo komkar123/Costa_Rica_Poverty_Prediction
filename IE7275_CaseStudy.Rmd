@@ -1,0 +1,498 @@
+---
+title: "IE7275 Case Study"
+author: "Omkar Kalange, Vineet Reddy"
+date: "3/21/2020"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r warning=F,echo=F}
+library(ggplot2)
+library(tidyverse)
+library(caTools)
+library(d3heatmap)
+library(dostats)
+library(gplots)
+library(caret)
+library(class)
+library(randomForest)
+library(pROC)
+library(e1071)
+library(rpart)
+library(MASS)
+library(neuralnet)
+```
+
+```{r}
+df=read.csv("costarica.csv", header=T,stringsAsFactors = F)
+#colnames(df)
+```
+
+Null Analysis of entire dataframe -
+
+Analyzing null valued columns -
+
+Checking % of nulls present in null valued columns :
+
+```{r}
+#colnames(df[,(apply(df,MARGIN = 2,FUN=function(x) {sum(is.na(x))/length(x)*100})>0)])
+sum(is.na(df$rez_esc))/length(df$rez_esc)*100
+```
+
+Handling meaneduc and SQBmeaned fields - We have 5 observations of NaN, instead of dropping the rows : We can visualize the distribution and decide how these values can be filled
+
+i) Meaneduc :
+
+```{r}
+boxplot(x=df$SQBmeaned,main="SQBMeaned Boxplot")
+```
+
+Due to outliers, it is advisable to use median to fill null values rather than using mean.
+
+```{r}
+med_educ=median(df$meaneduc,na.rm = T)
+df$meaneduc=replace_na(df$meaneduc,replace = med_educ)
+
+sqmed_educ=median(df$SQBmeaned,na.rm=T)
+df$SQBmeaned=replace_na(df$meaneduc,replace = sqmed_educ)
+
+```
+
+
+We can drop these three columns because they contain more than 70% Null values.
+
+```{r}
+df1=subset(df,select=-c(v2a1,v18q1,rez_esc),drop=F)
+```
+
+
+**Removing unnecessary column - "idhogar" **  
+
+```{r}
+df.new=subset(df1,select = -c(idhogar),drop=F)
+
+#df.num=subset(df,select = -c(Id,dependency,edjefe,edjefa))
+
+
+```
+
+**Columns of String type**
+
+```{r}
+df.num2=unlist(lapply(df.new,is.numeric))
+df.str=df.new[,!df.num2]
+nrow(df.str)
+```
+
+Edjefe : years of education of male head of household, based on the interaction of escolari (years of education), head of household and gender, yes=1 and no=0
+
+**Replace yes with 1 and no with 0**
+
+Checking nulls -
+```{r}
+apply(df.str,MARGIN=2, function(z) sum(is.na(z)))
+```
+
+```{r}
+
+df.str$dependency=ifelse(df.str$dependency=="yes",1,df.str$dependency)
+df.str$dependency=ifelse(df.str$dependency=="no",0,df.str$dependency)
+
+df.str$edjefe=ifelse(df.str$edjefe=="yes",1,df.str$edjefe)
+df.str$edjefe=ifelse(df.str$edjefe=="no",0,df.str$edjefe)
+
+df.str$edjefa=ifelse(df.str$edjefa=="yes",1,df.str$edjefa)
+df.str$edjefa=ifelse(df.str$edjefa=="no",0,df.str$edjefa)
+```
+
+
+```{r}
+df.str$dependency=as.numeric(df.str$dependency)
+
+df.str$edjefe=as.numeric(df.str$edjefe)
+
+df.str$edjefa=as.numeric(df.str$edjefa)
+```
+
+```{r}
+df.new1=merge.data.frame(x=df.new,y=df.str,by = "Id")
+head(df.new1)
+```
+
+```{r}
+df.new2=subset(df.new1,select=-c(dependency.x,edjefe.x,edjefa.x),drop=F)
+head(df.new2)
+```
+
+
+
+**Splitting Data into Test and Train**
+
+```{r}
+set.seed(12345)
+
+split=sample.split(df.new2$Target,SplitRatio = 0.7)
+
+df_train=subset(df.new2,subset = split)
+
+df_test=subset(df.new2, subset = !split)
+
+(df_train)
+```
+
+```{r}
+df.num1=unlist(lapply(df_train,is.numeric))
+df.num=df_train[,df.num1]
+
+#head(df.num)
+(df.num)
+```
+
+
+
+**Function to find binary columns from the dataframe**
+
+```{r}
+bin.col=list()
+is.binary<-function(col){
+  x<-unique(col)
+  if( sum(x,na.rm=T) == 0 || sum(x,na.rm=T) ==1){
+    return(T)
+  }else{
+    return(F)
+  }
+}
+```
+
+**Make separate dataframe for Binary Columns**
+
+```{r}
+df.bin1=unlist(lapply(df.num,is.binary))
+df.bin=df.num[,df.bin1]
+length(df.bin)
+```
+
+**Visualizing the categorial Variables to see the count of 1s and 0s**
+
+```{r}
+p=list()
+i=1
+check.dist<-function(column){
+    ggplot(df.bin,aes(x=as.factor(column)))+stat_count(binwidth = 1,fill="steelblue")+stat_count(binwidth=1,geom = "text",aes(label=round((..count../sum(..count..))*100,digits = 2)),vjust=-0.5)+labs(colnames(column))
+}
+
+#for (i in colnames(df.bin)){
+check.dist(df.bin$planpri)
+#}
+
+
+```
+
+**Removing binary columns which have more than 97% of 0s or 1s because they might be redundant while designing data mining model**
+
+```{r}
+train.size=nrow(df.bin)
+
+check.majority<-function(col){
+  if ((sum(col)/train.size)>=.97 || (sum(col)/train.size)<=0.03) return (F) else return(T)
+}
+
+df.bin.t=unlist(lapply(df.bin,check.majority))
+
+df.bincols=df.bin[,df.bin.t]
+#colnames(df.bincols)
+```
+
+**Length of Binary columns reduced from 102 to 67, 35 colummns either had 97% of 1s or 0s so it was bad idea considering them to determine target variable**
+
+```{r}
+df.bincols.new=as.factor(df.bincols)
+```
+
+Segregating numerical and string columns -
+  
+  
+```{r}
+
+
+df.nume=df.num[,!df.bin1]   
+#length(df.nume)
+df.nums=subset(df.nume,select = -c(Target))
+
+(df.nums)
+```
+
+**Data Analysis of Numerical Columns**
+
+Checking for numerical columns containing null values:
+
+```{r}
+
+check.na<-function(col1){
+  y<-unique(col1)
+  return(y %contains% NA)
+}
+
+
+df.null1<-unlist(lapply(df.nums,check.na))
+df.null<-df.nums[,df.null1]
+df.notnull<-df.nums[,!df.null1]
+
+(df.notnull)
+```
+
+Correlation of not null numeric columns :
+
+```{r}
+df.cor=cor(df.notnull)
+
+d3heatmap(df.cor,dendrogram = "none",main=paste("Heatmap for Numeric Variables"))
+
+#heatmap.2(cor(df.notnull),dendrogram = "none")
+
+#length(df.notnull)
+
+```
+
+
+**Removing highly correlated variables**
+
+```{r}
+x=findCorrelation(df.cor,cutoff=0.8,names=T)
+
+#subset(df.notnull,select=-c(findCorrelation(df.cor,cutoff=0.8,names=T),drop=F))
+df.numeric=df.notnull[,!colnames(df.notnull) %in% x]
+
+d3heatmap(cor(df.numeric),dendrogram = "none",main=paste("Heatmap for Numeric Variables"))
+
+```
+
+Numerical = 18 columns (earlier = 35)
+
+Binary = 67 columns    (earlier = 102)
+
+Total X = 85                 
+
+
+
+```{r}
+dfbinary=apply(df.bincols,MARGIN=2,function(a) as.factor(a))
+
+dfbinary1=data.frame(dfbinary)
+
+```
+
+
+```{r}
+x_train=cbind.data.frame(df.numeric,dfbinary1)
+y_train=(df_train$Target)
+
+colnames(x_train)
+```
+
+
+```{r}
+x_test=df_test[c("r4h1"           , "r4h2"            ,"r4m1"            ,"r4m2"            ,"r4t1"            ,"hogar_adul"    , 
+"hogar_mayor"    , "bedrooms"        ,"qmobilephone"    ,"SQBescolari"     ,"SQBhogar_total"  ,"SQBhogar_nin"  , 
+"SQBovercrowding", "SQBdependency"   ,"SQBmeaned"       ,"agesq"           ,"edjefe.y"        ,"edjefa.y"      , 
+"hacdor"         , "refrig"          ,"v18q"            ,"paredblolad"     ,"paredzocalo"     ,"paredpreb"     , 
+"paredmad"       , "pisomoscer"      ,"pisocemento"     ,"pisomadera"      ,"techozinc"       ,"cielorazo"     , 
+"abastaguadentro", "abastaguafuera"  ,"public"          ,"coopele"         ,"sanitario2"      ,"sanitario3"    , 
+"energcocinar2"  , "energcocinar3"   ,"energcocinar4"   ,"elimbasu1"       ,"elimbasu2"       ,"elimbasu3"     , 
+"epared1"        , "epared2"         ,"epared3"         ,"etecho1"         ,"etecho2"         ,"etecho3"       , 
+"eviv1"          , "eviv2"           ,"eviv3"           ,"dis"             ,"male"            ,"female"        , 
+"estadocivil1"   , "estadocivil2"    ,"estadocivil3"    ,"estadocivil4"    ,"estadocivil5"    ,"estadocivil6"  , 
+"estadocivil7"   , "parentesco1"     ,"parentesco2"     ,"parentesco3"     ,"parentesco6"     ,"instlevel1"    , 
+"instlevel2"     , "instlevel3"      ,"instlevel4"      ,"instlevel5"      ,"instlevel8"      ,"tipovivi1"     , 
+"tipovivi2"      , "tipovivi3"       ,"tipovivi5"       ,"computer"        ,"television"      ,"lugar1"        , 
+"lugar2"         , "lugar3"          ,"lugar4"          ,"lugar5"          ,"lugar6"          ,"area1"         , 
+"area2"          )]
+```
+
+
+
+
+
+```{r}
+dftest.bin1=unlist(lapply(x_test,is.binary))
+df.bintest=x_test[,dftest.bin1]
+
+dftestbinary=apply(df.bintest,MARGIN=2,function(a) as.factor(a))
+
+dftestbinary1=data.frame(dftestbinary)
+
+dftestbinary1
+```
+
+
+
+
+```{r}
+#dft.num1=unlist(lapply(x_test,is.numeric))
+dft.num=x_test[,!dftest.bin1]
+
+dft.num
+```
+
+```{r}
+x_test.new=cbind.data.frame(dft.num,dftestbinary1)
+y_test=(df_test$Target)
+
+(x_test.new)
+```
+
+```{r}
+
+y_train.new=(as.factor(y_train))
+y_test.new=(as.factor(y_test))
+
+#knn(train = x_train,test=x_test.new,cl=y_train,k=15)
+```
+
+Training KNN model : 
+
+```{r}
+mod=knn(train = x_train,test=x_test.new,cl=y_train,k=78,prob = T)
+```
+
+```{r warning=F}
+knntable = table(y_test.new,mod)
+#sum(diag(knntable))/sum(knntable)
+
+multiclass.roc(y_test.new,attributes(mod)$prob)
+
+#knntable
+```
+```{r}
+#cal_err <- function(actual,pred){
+ # mean(actual!=pred)
+#}
+```
+Error:
+```{r}
+#cal_err(y_test.new,mod)
+
+```
+
+Training Naive Bayes Model :
+
+```{r}
+y_train1=as.factor(y_train)
+
+form_train=cbind.data.frame(x_train,y_train1)
+
+mod.nb=naiveBayes(y_train1~.,data = form_train)
+
+pred=predict(mod.nb,x_test.new,"raw")
+#pred=predict(mod.nb,x_test.new)
+
+multiclass.roc(y_test.new,pred)
+
+#table(y_test.new,pred)
+```
+
+Training Decision Tree :
+
+```{r}
+mod.tree=rpart(formula = y_train1~.,data = form_train,method = "class")
+
+pred.tree=predict(mod.tree,x_test.new)
+
+multiclass.roc(y_test.new,pred.tree)
+
+#table(y_test.new,pred.tree)
+
+```
+
+Linear Discriminant Analysis :
+
+```{r}
+mod.lda=lda(formula = y_train1~.,data = form_train)
+
+pred.lda=predict(mod.lda,x_test.new,prob=T)
+
+#pred.lda=predict(mod.lda,x_test.new)
+
+multiclass.roc(y_test.new,pred.lda$posterior)
+
+mod.lda
+```
+
+Neural Network :
+
+```{r}
+
+#form_train1=as.data.frame(mutate_all(form_train, function(x)  if(as.numeric(as.character(x)))))
+
+form_neu=as.data.frame(mutate_all(form_train[,-86],function(x) (as.numeric(as.character(x)))))
+
+form_neu1=cbind.data.frame(form_neu,y_train1)
+
+n=names(form_neu1)
+
+f<-as.formula(paste("y_train1~",paste(n[!n%in%"y_train1"],collapse="+")))
+
+#mod.neu=neuralnet(formula = f, form_neu1, hidden = c(3,2),threshold = 0.01,linear.output = F,act.fct = "logistic")
+
+#predict(mod.neu,mutate_all(x_test.new, function(x)  as.numeric(as.character(x))),type="raw")
+
+#prob=compute(x = mod.neu, as.data.frame(mutate_all(x_test.new, function(x)  as.numeric(as.character(x))) ))
+
+#prob$net.result
+
+```
+
+Support Vector Machines -
+
+```{r}
+mod.svm=svm(y_train1~.,data = form_train,type='C-classification',prob=T)
+
+pred.svm=predict(mod.svm,x_test.new,probability = T)
+
+multiclass.roc(y_test.new,attr(pred.svm, "probabilities"))
+```
+
+
+
+Training Random Forest Model :
+
+```{r}
+#mod_ran=randomForest(x = x_train,y = y_train,xtest = x_test.new,ytest =y_test.new,ntree = 20)
+
+#form=cbind.data.frame(x_train,y_train1)
+#model_ran=randomForest(y_train~.,data = form_train,ntree=)
+model_ran=randomForest(x=x_train,y=y_train1,ntree=300)
+```
+
+```{r}
+#predict(model_ran,x_test.new)
+#model_ran
+#form_valid=cbind.data.frame(x_test.new,y_test.new)
+y_pred=predict(model_ran,x_test.new)
+conf=table(y_test.new,y_pred)
+#conf
+multiclass.roc(y_test.new,y_pred)
+```
+
+```{r}
+#(conf[1,1]+conf[2,2]+conf[3,3]+conf[4,4])/sum(conf)
+```
+
+```{r}
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
